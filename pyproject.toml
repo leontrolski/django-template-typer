@@ -1,0 +1,30 @@
+[project]
+name = "django-template-typer"
+version = "0.1.0"
+description = "backwards compatible typed Django templates"
+readme = "README.md"
+authors = [
+    { name = "Oli Russell", email = "mrxoliver@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "Django",
+    "trolskgen>=0.0.20",
+]
+
+[project.urls]
+repository = "https://github.com/leontrolski/django-template-typer"
+
+[dependency-groups]
+test = [
+    "pytest",
+    "mypy",
+    "ruff",
+    "django-stubs",
+    "ocdiff",
+    "rich",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"

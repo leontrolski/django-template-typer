@@ -1,0 +1,41 @@
+{% load custom %}
+
+{% extends 'header.html' %}
+
+{% block title %}
+    My Title
+    {{ a }}
+{% endblock %}
+
+Hi {{ name|brrp }} {{ surname|arg:1 }}
+
+{% for x in l %}
+    {{ x }}
+    {% for y, z in x %}
+        {{ y.foo }}
+    {% endfor %}
+{% endfor %}
+
+{{ a|f:b|g:'c'|h:1 }}
+
+{% custom_tag p q r=d %} more args here
+
+{% if e or not f %}
+    Hullo
+{% elif g %}
+    There
+{% endif %}
+
+{% url 'some-url-name' t u=1 %}
+
+{% csrf_token %}
+
+{% comment 'Optional note' %}
+    <p>Commented out text with {{ create_date|date:'c' }}</p>
+{% endcomment %}
+
+{% include 'name_snippet.html' with greeting='Hi' only %}
+
+{% with total=business.employees.count %}
+    {{ total }} employee{{ total|pluralize }}
+{% endwith %}
