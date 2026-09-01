@@ -9,7 +9,7 @@
 
 Hi {{ name|brrp }} {{ surname|arg:1 }}
 
-{% for x in l %}
+{% for x in l.woo %}
     {{ x }}
     {% for y, z in x %}
         {{ y.foo }}
@@ -22,11 +22,14 @@ Hi {{ name|brrp }} {{ surname|arg:1 }}
 
 {% if e or not f %}
     Hullo
-{% elif g %}
+{% elif g.foo %}
+    {{ g.foo }}
     There
+{% else %}
+    {{ e }}
 {% endif %}
 
-{% url 'some-url-name' t u=1 %}
+{% url 'some-url-name' t some_arg u=1 v=some_kw_arg %}
 
 {% csrf_token %}
 
@@ -34,7 +37,7 @@ Hi {{ name|brrp }} {{ surname|arg:1 }}
     <p>Commented out text with {{ create_date|date:'c' }}</p>
 {% endcomment %}
 
-{% include 'name_snippet.html' with greeting='Hi' only %}
+{% include 'sub/name-snippet.html' with greeting='Hi' only %}
 
 {% with total=business.employees.count %}
     {{ total }} employee{{ total|pluralize }}

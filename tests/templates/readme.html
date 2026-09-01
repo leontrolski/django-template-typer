@@ -1,0 +1,16 @@
+{% load custom %}
+{% extends 'header.html' %}
+
+{% block title %}
+    <h1>{{ a }}</h1>
+{% endblock %}
+
+Hi {{ b|capitalize_name }}
+
+{% for x in l %}
+    {{ x }}
+{% endfor %}
+
+{% if c %}
+    {{ c }}
+{% endif %}

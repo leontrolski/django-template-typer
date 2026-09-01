@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NewType
 
-from django.template import base, defaulttags, smartif
+from django.template import base, defaulttags, engine, smartif
 
 from django_template_typer import django_patched
+
+LiteralValue = NewType("LiteralValue", object)
+Lineno = NewType("Lineno", int)
 
 
 @dataclass(kw_only=True)
 class _Node:
-    lineno: int | None = 1
+    lineno: Lineno = Lineno(1)
     children: tuple[Node, ...] = ()
 
 
 @dataclass(kw_only=True)
 class RootNode(_Node):
+    source: str | Path
+
     def to_str(self) -> str:
         return "".join(c.to_str() for c in self.children)
 
@@ -31,13 +38,13 @@ class Name:
 
 @dataclass
 class Literal:
-    value: object
+    value: LiteralValue
 
     def to_str(self) -> str:
         return repr(self.value)
 
 
-@dataclass(kw_only=True)
+@dataclass
 class Filter:
     var: Name
     arg: Name | Literal | None
@@ -48,15 +55,25 @@ class Filter:
         return f"{self.var.to_str()}:{self.arg.to_str()}"
 
 
-@dataclass(kw_only=True)
+@dataclass
 class FilterExpression:
     var: Name | Literal
-    filters: list[Filter]
+    filters: list[Filter] = field(default_factory=list)
 
     def to_str(self) -> str:
         if not self.filters:
             return self.var.to_str()
         return f"{self.var.to_str()}|{'|'.join(n.to_str() for n in self.filters)}"
+
+    def to_expr(self) -> Expr:
+        value: Expr = self.var
+        for filter in self.filters:
+            value = Call(
+                filter.var.name,
+                [value] if filter.arg is None else [value, filter.arg],
+                {},
+            )
+        return value
 
 
 @dataclass(kw_only=True)
@@ -90,67 +107,75 @@ class ForNode(_Node):
 
 @dataclass(kw_only=True)
 class IfNode(_Node):
-    conditions: list[tuple[Predicate, list[Node]]]
+    conditions: list[tuple[Predicate | None, list[Node]]]
 
     def to_str(self) -> str:
         ifs = itertools.chain(iter(["if"]), itertools.cycle(iter(["elif"])))
         s = ""
         for if_, [predicate, body] in zip(ifs, self.conditions):
-            s += f"{{% {if_} {predicate.to_str()} %}}"
+            if predicate is None:
+                s += "{% else %}"
+            else:
+                s += f"{{% {if_} {predicate.to_str()} %}}"
             for c in body:
                 s += c.to_str()
         s += "{% endif %}"
         return s
 
 
-@dataclass
-class IncludeSpecialArgs:
-    with_: bool = False
-    only: bool = False
+def _join(args: Iterator[str]) -> str:
+    return "".join(" " + arg for arg in args)
 
 
 @dataclass(kw_only=True)
-class SimpleTagNode(_Node):
+class TagNode(_Node):
     name: str
     args: list[FilterExpression]
     kwargs: dict[str, FilterExpression]
-    with_closing: bool
-    include: IncludeSpecialArgs | None = None
+    pre_bools: list[Name] = field(default_factory=list)
+    post_bools: list[Name] = field(default_factory=list)
+    with_closing: bool = False
+
+    @property
+    def kwargs_with_bools(self) -> dict[str, FilterExpression]:
+        kwargs = self.kwargs
+        for b in self.pre_bools + self.post_bools:
+            kwargs[b.name] = FilterExpression(Literal(LiteralValue(True)))
+        return kwargs
 
     def to_str(self) -> str:
-        args, kwargs = "", ""
-        if self.args:
-            args = " " + " ".join(n.to_str() for n in self.args)
-        if self.kwargs:
-            kwargs = " " + " ".join(f"{k}={n.to_str()}" for k, n in self.kwargs.items())
-        with_ = " with" if self.include and self.include.with_ else ""
-        only = " only" if self.include and self.include.only else ""
-        s = f"{{% {self.name}{args}{with_}{kwargs}{only} %}}"
+        args = _join(n.to_str() for n in self.args)
+        kwargs = _join(f"{k}={n.to_str()}" for k, n in self.kwargs.items())
+        pre_bools = _join(n.to_str() for n in self.pre_bools)
+        post_bools = _join(n.to_str() for n in self.post_bools)
+        s = f"{{% {self.name}{args}{pre_bools}{kwargs}{post_bools} %}}"
+        s += "".join(c.to_str() for c in self.children)
         if self.with_closing:
-            s += "".join(c.to_str() for c in self.children)
             s += f"{{% end{self.name} %}}"
         return s
 
 
-Node = TextNode | ExprNode | ForNode | IfNode | SimpleTagNode
+Node = TextNode | ExprNode | ForNode | IfNode | TagNode
 
 
-def parse_template(template: str | Path) -> RootNode:
-    if isinstance(template, Path):
-        template = template.read_text()
-
-    t = django_patched.Template(template)
-    return RootNode(children=tuple(convert(n) for n in t.nodelist))
+def parse_template(source: str | Path) -> RootNode:
+    source_str = source
+    if isinstance(source_str, Path):
+        source_str = source_str.read_text()
+    t = django_patched.Template(source_str, engine=engine.Engine())
+    return RootNode(source=source, children=tuple(convert(n) for n in t.nodelist))
 
 
 def _convert_variable(o: object) -> Name | Literal:
     if isinstance(o, base.Variable):
         if not isinstance(o.var, str):
             raise TypeError("Expected str")
+        if o.literal is not None:
+            return Literal(LiteralValue(o.literal))
         return Name(o.var)
     if not isinstance(o, str):
         raise TypeError("Expected str")
-    return Literal(o)
+    return Literal(LiteralValue(o))
 
 
 def _convert_filter_expression(f: base.FilterExpression | str) -> FilterExpression:
@@ -175,7 +200,9 @@ def convert(n: base.Node | str) -> Node:
     if isinstance(n, str):
         raise TypeError("Didn't expect to actually see a str, where is this from?")
 
-    assert n.token is not None
+    if n.token is None or n.token.lineno is None:
+        raise RuntimeError("Expected node to have token with lineno")
+
     node: Node
     if isinstance(n, base.TextNode):
         node = TextNode(s=n.s)
@@ -189,33 +216,36 @@ def convert(n: base.Node | str) -> Node:
             iter=_convert_filter_expression(n.sequence),
         )
     elif isinstance(n, defaulttags.IfNode):
+        n.child_nodelists = ()
         node = IfNode(conditions=[])
         for predicate, children in n.conditions_nodelists:
             node.conditions.append(
-                (_convert_predicate(predicate), [convert(c) for c in children])
+                (
+                    None if predicate is None else _convert_predicate(predicate),
+                    [convert(c) for c in children],
+                )
             )
     elif isinstance(n, django_patched.Tag):
-        node = SimpleTagNode(
+        node = TagNode(
             name=n.name,
             args=[_convert_filter_expression(m) for m in n.args],
             kwargs={k: _convert_filter_expression(m) for k, m in n.kwargs.items()},
             with_closing=isinstance(n, django_patched.TagWithClosing),
         )
         if node.name == "include":
-            node.include = IncludeSpecialArgs()
             args = list(node.args)
             node.args = []
             for arg in args:
                 if arg == FilterExpression(var=Name(name="with"), filters=[]):
-                    node.include.with_ = True
+                    node.pre_bools.append(Name(name="with"))
                 elif arg == FilterExpression(var=Name(name="only"), filters=[]):
-                    node.include.only = True
+                    node.post_bools.append(Name(name="only"))
                 else:
                     node.args.append(arg)
     else:
         raise TypeError(f"Unexpected node type: {type(n)}")
 
-    node.lineno = n.token.lineno
+    node.lineno = Lineno(n.token.lineno)
     for attr in n.child_nodelists:
         node.children += tuple(convert(n) for n in getattr(n, attr))
     return node
@@ -261,3 +291,16 @@ def _convert_predicate(n: object) -> Predicate:
         return UnaryOp(n.id, _convert_predicate(n.first))
 
     return BinaryOp(n.id, _convert_predicate(n.first), _convert_predicate(n.second))
+
+
+# Exprs
+
+
+@dataclass
+class Call:
+    f_name: str
+    args: list[Expr]
+    kwargs: dict[str, Expr]
+
+
+Expr = Name | Literal | Call

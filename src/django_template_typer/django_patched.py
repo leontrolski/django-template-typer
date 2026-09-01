@@ -4,34 +4,72 @@ from typing import Any, cast
 
 from django.template import base, exceptions
 
-# For, commented tags, haven't determined whether they are "simple" or not.
-SIMPLE_BUILTIN_TAGS = {
-    # "autoescape": False,
-    "block": True,
-    "comment": True,
-    # "csp_nonce_attr": False,
-    "csrf_token": False,
-    # "cycle": False,
-    # "debug": False,
-    "extends": False,
-    # "filter": False,
-    # "firstof": False,
-    # "ifchanged": False,
-    "include": False,
-    "load": False,
-    # "lorem": False,
-    # "now": False,
-    # "partial": False,
-    # "partialdef": False,
-    # "querystring": False,
-    # "regroup": False,
-    # "resetcycle": False,
-    # "spaceless": False,
-    # "templatetag": False,
-    "url": False,
-    # "verbatim": False,
-    # "widthratio": False,
-    "with": True,
+
+class Tag(base.Node):
+    child_nodelists: tuple[str, ...] = ()
+    name: str
+    args: list[base.FilterExpression]
+    kwargs: dict[str, base.FilterExpression]
+
+    def __init__(
+        self,
+        parser: base.Parser,
+        token: base.Token,
+    ):
+        name, *bits = token.split_contents()
+        self.name = name
+        self.args = []
+        self.kwargs = {}
+        for bit in bits:
+            kwarg = base.token_kwargs([bit], parser)
+            if kwarg:
+                param, value = kwarg.popitem()
+                self.kwargs[str(param)] = value
+            else:
+                self.args.append(parser.compile_filter(bit))
+
+
+class TagWithClosing(Tag):
+    child_nodelists = ("nodelist",)
+    nodelist: base.NodeList
+
+    def __init__(
+        self,
+        parser: base.Parser,
+        token: base.Token,
+    ):
+        super().__init__(parser, token)
+        self.nodelist = parser.parse((f"end{self.name}",))
+        parser.next_token()
+
+
+SIMPLE_BUILTIN_TAGS: dict[str, type[Tag]] = {
+    "autoescape": TagWithClosing,
+    "block": TagWithClosing,
+    "comment": TagWithClosing,
+    "csp_nonce_attr": Tag,
+    "csrf_token": Tag,
+    "cycle": Tag,
+    "debug": Tag,
+    "extends": Tag,
+    "filter": TagWithClosing,
+    "firstof": Tag,
+    "ifchanged": TagWithClosing,
+    "include": Tag,  # note, this has some gotchas - see `parser.py`
+    "load": Tag,
+    "lorem": Tag,
+    "now": Tag,
+    "partial": Tag,
+    "partialdef": TagWithClosing,
+    "querystring": Tag,
+    "regroup": Tag,
+    "resetcycle": Tag,
+    "spaceless": TagWithClosing,
+    "templatetag": Tag,
+    "url": Tag,
+    "verbatim": TagWithClosing,
+    "widthratio": Tag,
+    "with": TagWithClosing,
 }
 
 
@@ -51,8 +89,7 @@ class Parser(base.Parser):
         for tag in SIMPLE_BUILTIN_TAGS:
             self.tags.pop(tag)
         self.tags = KeyDefaultDict(
-            self.tags,
-            lambda k: TagWithClosing if SIMPLE_BUILTIN_TAGS.get(cast(str, k)) else Tag,
+            self.tags, lambda k: SIMPLE_BUILTIN_TAGS.get(cast(str, k), Tag)
         )
         self.libraries = KeyDefaultDict({}, lambda _: Library())
         self.filters = KeyDefaultDict({}, lambda k: Filter(k))
@@ -101,50 +138,6 @@ class Template(base.Template):
 class Library:
     tags: dict[str, object] = field(default_factory=dict)
     filters: dict[str, object] = field(default_factory=dict)
-
-
-class Tag(base.Node):
-    child_nodelists: tuple[str, ...] = ()
-    name: str
-    args: list[base.FilterExpression]
-    kwargs: dict[str, base.FilterExpression]
-
-    def __init__(
-        self,
-        parser: base.Parser,
-        token: base.Token,
-    ):
-        name, *bits = token.split_contents()
-        self.name = name
-        self.args = []
-        self.kwargs = {}
-        for bit in bits:
-            kwarg = base.token_kwargs([bit], parser)
-            if kwarg:
-                param, value = kwarg.popitem()
-                self.kwargs[str(param)] = value
-            else:
-                self.args.append(parser.compile_filter(bit))
-
-    def render(self, context: object) -> str:
-        raise NotImplementedError
-
-    def render_annotated(self, context: object) -> str:
-        raise NotImplementedError
-
-
-class TagWithClosing(Tag):
-    child_nodelists = ("nodelist",)
-    nodelist: base.NodeList
-
-    def __init__(
-        self,
-        parser: base.Parser,
-        token: base.Token,
-    ):
-        super().__init__(parser, token)
-        self.nodelist = parser.parse((f"end{self.name}",))
-        parser.next_token()
 
 
 @dataclass
